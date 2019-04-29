@@ -4,7 +4,7 @@ from tqdm import tqdm, trange
 from tempfile import TemporaryDirectory
 import shelve
 
-from random import random, randint, shuffle, choice, sample
+from random import random, randrange, randint, shuffle, choice, sample
 from pytorch_pretrained_bert.tokenization import BertTokenizer
 import numpy as np
 import json
@@ -30,6 +30,8 @@ class DocumentDatabase:
         self.reduce_memory = reduce_memory
 
     def add_document(self, document):
+        if not document:
+            return
         if self.reduce_memory:
             current_idx = len(self.doc_lengths)
             self.document_shelf[str(current_idx)] = document
@@ -49,11 +51,11 @@ class DocumentDatabase:
                 self._precalculate_doc_weights()
             rand_start = self.doc_cumsum[current_idx]
             rand_end = rand_start + self.cumsum_max - self.doc_lengths[current_idx]
-            sentence_index = randint(rand_start, rand_end-1) % self.cumsum_max
+            sentence_index = randrange(rand_start, rand_end) % self.cumsum_max
             sampled_doc_index = np.searchsorted(self.doc_cumsum, sentence_index, side='right')
         else:
             # If we don't use sentence weighting, then every doc has an equal chance to be chosen
-            sampled_doc_index = current_idx + randint(1, len(self.doc_lengths)-1)
+            sampled_doc_index = (current_idx + randrange(1, len(self.doc_lengths))) % len(self.doc_lengths)
         assert sampled_doc_index != current_idx
         if self.reduce_memory:
             return self.document_shelf[str(sampled_doc_index)]
@@ -129,6 +131,7 @@ def create_masked_lm_predictions(tokens, masked_lm_prob, max_predictions_per_seq
     return tokens, mask_indices, masked_token_labels
 
 
+
 def create_instances_from_document(
         doc_database, doc_idx, max_seq_length, short_seq_prob,
         masked_lm_prob, max_predictions_per_seq, vocab_list, is_domain):
@@ -159,8 +162,10 @@ def create_instances_from_document(
     instances = []
     current_chunk = []
     current_length = 0
+    failures = 0
     i = 0
     while i < len(document):
+
         segment = document[i]
         current_chunk.append(segment)
         current_length += len(segment)
@@ -170,7 +175,7 @@ def create_instances_from_document(
                 # (first) sentence.
                 a_end = 1
                 if len(current_chunk) >= 2:
-                    a_end = randint(1, len(current_chunk) - 1)
+                    a_end = randrange(1, len(current_chunk))
 
                 tokens_a = []
                 for j in range(a_end):
@@ -186,7 +191,7 @@ def create_instances_from_document(
                     # Sample a random document, with longer docs being sampled more frequently
                     random_document = doc_database.sample_doc(current_idx=doc_idx, sentence_weighted=True)
 
-                    random_start = randint(0, len(random_document) - 1)
+                    random_start = randrange(0, len(random_document))
                     for j in range(random_start, len(random_document)):
                         tokens_b.extend(random_document[j])
                         if len(tokens_b) >= target_b_length:
@@ -202,30 +207,31 @@ def create_instances_from_document(
                         tokens_b.extend(current_chunk[j])
                 truncate_seq_pair(tokens_a, tokens_b, max_num_tokens)
 
-                assert len(tokens_a) >= 1
-                assert len(tokens_b) >= 1
+                if len(tokens_a) >= 1 and len(tokens_b) >= 1:
 
-                tokens = ["[CLS]"] + tokens_a + ["[SEP]"] + tokens_b + ["[SEP]"]
-                # The segment IDs are 0 for the [CLS] token, the A tokens and the first [SEP]
-                # They are 1 for the B tokens and the final [SEP]
-                segment_ids = [0 for _ in range(len(tokens_a) + 2)] + [1 for _ in range(len(tokens_b) + 1)]
+                    tokens = ["[CLS]"] + tokens_a + ["[SEP]"] + tokens_b + ["[SEP]"]
+                    # The segment IDs are 0 for the [CLS] token, the A tokens and the first [SEP]
+                    # They are 1 for the B tokens and the final [SEP]
+                    segment_ids = [0 for _ in range(len(tokens_a) + 2)] + [1 for _ in range(len(tokens_b) + 1)]
 
-                tokens, masked_lm_positions, masked_lm_labels = create_masked_lm_predictions(
-                    tokens, masked_lm_prob, max_predictions_per_seq, vocab_list)
+                    tokens, masked_lm_positions, masked_lm_labels = create_masked_lm_predictions(
+                        tokens, masked_lm_prob, max_predictions_per_seq, vocab_list)
 
-                instance = {
-                    "tokens": tokens,
-                    "segment_ids": segment_ids,
-                    "is_random_next": is_random_next,
-                    "masked_lm_positions": masked_lm_positions,
-                    "masked_lm_labels": masked_lm_labels,
-                    "is_domain": is_domain}
-                instances.append(instance)
+                    instance = {
+                        "tokens": tokens,
+                        "segment_ids": segment_ids,
+                        "is_random_next": is_random_next,
+                        "masked_lm_positions": masked_lm_positions,
+                        "masked_lm_labels": masked_lm_labels,
+                        "is_domain": is_domain}
+                    instances.append(instance)
+                else:
+                    failures += 1
             current_chunk = []
             current_length = 0
         i += 1
 
-    return instances
+    return instances, failures
 
 def add_corpus_to_docs(docs, train_file, tokenizer):
     with train_file.open() as f:
@@ -238,19 +244,23 @@ def add_corpus_to_docs(docs, train_file, tokenizer):
             else:
                 tokens = tokenizer.tokenize(line)
                 doc.append(tokens)
+        if doc:
+            docs.add_document(doc)  # If the last doc didn't end on a newline, make sure it still gets added
 
 def write_doc_instances(epoch_file, docs, vocab_list, is_domain, args):
     num_instances = 0
+    total_failures = 0
     for doc_idx in trange(len(docs), desc=f"Document, in domain: {is_domain}"):
-        doc_instances = create_instances_from_document(
+        doc_instances, failures = create_instances_from_document(
             docs, doc_idx, max_seq_length=args.max_seq_len, short_seq_prob=args.short_seq_prob,
             masked_lm_prob=args.masked_lm_prob, max_predictions_per_seq=args.max_predictions_per_seq,
             vocab_list=vocab_list, is_domain=is_domain)
         doc_instances = [json.dumps(instance) for instance in doc_instances]
+        total_failures += failures
         for instance in doc_instances:
             epoch_file.write(instance + '\n')
             num_instances += 1
-    return num_instances
+    return num_instances, total_failures
 
 def main():
     parser = ArgumentParser()
@@ -286,17 +296,18 @@ def main():
 
             args.output_dir.mkdir(exist_ok=True)
             for epoch in trange(args.epochs_to_generate, desc="Epoch"):
+                total_failures = 0
                 epoch_filename = args.output_dir / f"epoch_{epoch}.json"
                 num_instances = 0
                 with epoch_filename.open('w+') as epoch_file:
 
-                    num_instances += write_doc_instances(epoch_file, domain_docs, vocab_list, is_domain=1, args=args)
-                    num_instances += write_doc_instances(epoch_file, non_domain_docs, vocab_list, is_domain=0, args=args)
+                    instances, failures = write_doc_instances(epoch_file, domain_docs, vocab_list, is_domain=1, args=args)
+                    num_instances += instances
+                    total_failures += failures
+                    instances, failures = write_doc_instances(epoch_file, non_domain_docs, vocab_list, is_domain=0, args=args)
+                    num_instances += instances
+                    total_failures += failures
 
-                    # Randomly shuffe all lines
-                    lines = epoch_file.readlines()
-                    shuffle(lines)
-                    epoch_file.writelines(lines)
 
                 metrics_file = args.output_dir / f"epoch_{epoch}_metrics.json"
                 with metrics_file.open('w') as metrics_file:
@@ -305,6 +316,10 @@ def main():
                         "max_seq_len": args.max_seq_len
                     }
                     metrics_file.write(json.dumps(metrics))
+
+                print('Total number of incorrect generation attempts')
+                print(total_failures)
+                print('NOTE: All output files must be shuffled in order to intermix lines from each domain')
 
 
 if __name__ == '__main__':

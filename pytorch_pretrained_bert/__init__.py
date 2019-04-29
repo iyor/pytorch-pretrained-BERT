@@ -9,6 +9,7 @@ from .modeling import (BertConfig, BertModel, BertForPreTraining,
                        BertForSequenceClassification, BertForMultipleChoice,
                        BertForTokenClassification, BertForQuestionAnswering,
                        load_tf_weights_in_bert)
+from .modeling_domaininvariance import BertForDomainInvariance
 from .modeling_openai import (OpenAIGPTConfig, OpenAIGPTModel,
                               OpenAIGPTLMHeadModel, OpenAIGPTDoubleHeadsModel,
                               load_tf_weights_in_openai_gpt)
