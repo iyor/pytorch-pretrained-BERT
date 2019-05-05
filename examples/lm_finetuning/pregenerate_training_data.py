@@ -204,24 +204,22 @@ def create_instances_from_document(
                         tokens_b.extend(current_chunk[j])
                 truncate_seq_pair(tokens_a, tokens_b, max_num_tokens)
 
-                assert len(tokens_a) >= 1
-                assert len(tokens_b) >= 1
+                if len(tokens_a) >= 1 and len(tokens_b) >= 1:
+                    tokens = ["[CLS]"] + tokens_a + ["[SEP]"] + tokens_b + ["[SEP]"]
+                    # The segment IDs are 0 for the [CLS] token, the A tokens and the first [SEP]
+                    # They are 1 for the B tokens and the final [SEP]
+                    segment_ids = [0 for _ in range(len(tokens_a) + 2)] + [1 for _ in range(len(tokens_b) + 1)]
 
-                tokens = ["[CLS]"] + tokens_a + ["[SEP]"] + tokens_b + ["[SEP]"]
-                # The segment IDs are 0 for the [CLS] token, the A tokens and the first [SEP]
-                # They are 1 for the B tokens and the final [SEP]
-                segment_ids = [0 for _ in range(len(tokens_a) + 2)] + [1 for _ in range(len(tokens_b) + 1)]
+                    tokens, masked_lm_positions, masked_lm_labels = create_masked_lm_predictions(
+                        tokens, masked_lm_prob, max_predictions_per_seq, vocab_list)
 
-                tokens, masked_lm_positions, masked_lm_labels = create_masked_lm_predictions(
-                    tokens, masked_lm_prob, max_predictions_per_seq, vocab_list)
-
-                instance = {
-                    "tokens": tokens,
-                    "segment_ids": segment_ids,
-                    "is_random_next": is_random_next,
-                    "masked_lm_positions": masked_lm_positions,
-                    "masked_lm_labels": masked_lm_labels}
-                instances.append(instance)
+                    instance = {
+                        "tokens": tokens,
+                        "segment_ids": segment_ids,
+                        "is_random_next": is_random_next,
+                        "masked_lm_positions": masked_lm_positions,
+                        "masked_lm_labels": masked_lm_labels}
+                    instances.append(instance)
             current_chunk = []
             current_length = 0
         i += 1
