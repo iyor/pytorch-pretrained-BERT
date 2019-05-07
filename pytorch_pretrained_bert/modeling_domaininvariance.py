@@ -137,7 +137,7 @@ class BertForDomainInvariance(BertPreTrainedModel):
             masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), masked_lm_labels.view(-1))
             next_sentence_loss = loss_fct(seq_relationship_score.view(-1, 2), next_sentence_label.view(-1))
             domain_loss = loss_fct(seq_relationship_score.view(-1, 2), is_domain_label.view(-1))
-            total_loss = masked_lm_loss + next_sentence_loss + domain_loss
+            total_loss = masked_lm_loss + next_sentence_loss - domain_loss
             return total_loss
         else:
             return prediction_scores, seq_relationship_score, domain_relationship_score
